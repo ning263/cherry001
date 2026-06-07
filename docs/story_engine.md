@@ -43,6 +43,20 @@ The narration strategy should decide:
 - Which emotional transitions require pacing.
 - When discussion or interpretation should appear.
 
+## Recommended Discovery Flow
+
+For a first encounter with a work, use this flow:
+
+1. State what a bad summary would say.
+2. Explain why that summary destroys the work.
+3. Search for the deeper story archetype.
+4. Enter the first irreversible wound or pressure.
+5. Follow the causal chain into the protagonist's later choices.
+6. Compare with nearby archetypes only when it clarifies the work.
+7. End with the protagonist's core life question, not a closed moral.
+
+This flow keeps the narration from becoming either plot summary or abstract criticism.
+
 ## Engine Output
 
 The story engine may eventually produce structured outputs such as:
