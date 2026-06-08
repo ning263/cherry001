@@ -12,6 +12,25 @@ The key question is:
 
 Can the system transform a work into a story-first, causally coherent, emotionally continuous experience?
 
+## Current Prototype
+
+The first runnable prototype is a static local workbench in `mvp/index.html`.
+
+It intentionally avoids accounts, libraries, backend services, and model API integration. The goal is to test the content shape before the product surface grows.
+
+The workbench asks for:
+
+- The shallow summary to reject.
+- The story archetype.
+- The protagonist's core life question.
+- Key scenes with visible action, pressure, turn, and consequence.
+- Modern resonance.
+- An open closing question.
+
+It then generates a first-pass talk track and checks whether the draft has enough story structure to review.
+
+This is not yet a final content engine. It is a calibration tool for discovering whether the rules produce better narration.
+
 ## In Scope
 
 - One or a few representative works.
