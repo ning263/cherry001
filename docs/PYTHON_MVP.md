@@ -35,6 +35,8 @@ CLI
 -> Node Content Generator
 -> Factuality Reviewer
 -> Node Reviser, when factuality fails
+-> Narrative Coherence Reviewer
+-> Narrative Reviser, when narrative coherence fails
 -> Quality Reviewer
 -> JSON Result
 ```
@@ -130,6 +132,8 @@ Book
 -> Nodes
 -> Factuality Review
 -> Node Revision, max 2 retries
+-> Narrative Review
+-> Narrative Revision, max 1 retry
 -> Quality Review
 ```
 
@@ -141,11 +145,16 @@ Each node is structured:
 {
   "node_id": "",
   "title": "",
+  "opening_bridge": "",
   "source_scenes": [],
   "required_facts": [],
   "causal_context": "",
   "emotional_context": "",
+  "character_intro_notes": [],
+  "scene_moment": "",
   "narration": "",
+  "companion_insight": "",
+  "transition_to_next": "",
   "uncertainty_notes": []
 }
 ```
@@ -153,6 +162,8 @@ Each node is structured:
 The factuality reviewer runs before the quality reviewer. It checks whether the generated nodes invented important events, changed relationships, changed motivations, reversed causality, moved later events earlier, or mixed scenes together.
 
 If factuality fails, the orchestrator asks the model to revise the nodes and then reviews factuality again. It stops after 2 retries to avoid loops.
+
+The narrative coherence reviewer runs after factuality and before final quality review. It checks role introductions, scene transitions, summary-like pacing, missing scene moments, over-explanation, missing companion insight, and premature abstraction. If it fails, the orchestrator revises the nodes once and reviews narrative coherence again.
 
 ## Scope
 

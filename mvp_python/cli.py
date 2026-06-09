@@ -24,6 +24,7 @@ def main() -> None:
     parser.add_argument("--mock", action="store_true", help="Run without API calls.")
     parser.add_argument("--out", default="", help="Optional JSON output path.")
     parser.add_argument("--factuality-retries", type=int, default=2, help="Maximum factuality revision retries.")
+    parser.add_argument("--narrative-retries", type=int, default=1, help="Maximum narrative revision retries.")
 
     args = parser.parse_args()
 
@@ -42,6 +43,7 @@ def main() -> None:
             mode=args.mode,
             user_note=args.note,
             factuality_retries=args.factuality_retries,
+            narrative_retries=args.narrative_retries,
         ),
     )
 

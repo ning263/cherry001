@@ -100,6 +100,8 @@ class OpenAIClient:
                 {"role": "user", "content": user},
             ],
         }
+        if self.provider == "deepseek":
+            payload["response_format"] = {"type": "json_object"}
 
         request = urllib.request.Request(
             f"{self.base_url.rstrip('/')}/chat/completions",
