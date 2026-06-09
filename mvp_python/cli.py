@@ -11,7 +11,7 @@ from .orchestrator import GenerateOptions, generate_script, save_result
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate an AI Reading Companion MVP script.")
-    parser.add_argument("--book", required=True, help="Book name, for example: 倚天屠龙记")
+    parser.add_argument("--book", required=True, help="Book name, for example: 倚天屠龙记.")
     parser.add_argument("--duration", type=int, default=12, help="Target duration in minutes.")
     parser.add_argument(
         "--mode",
@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--out", default="", help="Optional JSON output path.")
     parser.add_argument("--factuality-retries", type=int, default=2, help="Maximum factuality revision retries.")
     parser.add_argument("--narrative-retries", type=int, default=1, help="Maximum narrative revision retries.")
+    parser.add_argument("--quality-retries", type=int, default=1, help="Maximum quality revision retries.")
 
     args = parser.parse_args()
 
@@ -44,6 +45,7 @@ def main() -> None:
             user_note=args.note,
             factuality_retries=args.factuality_retries,
             narrative_retries=args.narrative_retries,
+            quality_retries=args.quality_retries,
         ),
     )
 

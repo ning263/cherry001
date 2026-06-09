@@ -7,6 +7,7 @@ class MockLLM:
     def __init__(self) -> None:
         self.factuality_calls = 0
         self.narrative_calls = 0
+        self.quality_calls = 0
 
     def complete(self, system: str, user: str) -> str:
         if "Book Recall 事实整理器" in system:
@@ -17,6 +18,9 @@ class MockLLM:
 
         if "讲述骨架生成器" in system:
             return json.dumps(mock_outline(), ensure_ascii=False)
+
+        if "Scene Plan 规划器" in system:
+            return json.dumps(mock_scene_plan(user), ensure_ascii=False)
 
         if "节点正文生成器" in system:
             return json.dumps(mock_node(user), ensure_ascii=False)
@@ -30,34 +34,42 @@ class MockLLM:
 
         if "叙事连贯性审查器" in system:
             self.narrative_calls += 1
-            if self.narrative_calls == 1:
-                return json.dumps(
-                    {
-                        "passed": False,
-                        "issues": [
-                            {
-                                "type": "missing_transition",
-                                "severity": "medium",
-                                "text": "节点 N002 进入寒毒时缺少从武当创伤到身体后果的过渡。",
-                                "node_id": "N002",
-                                "suggested_fix": "补充 opening_bridge，说明父母之死后寒毒成为持续后果。",
-                            }
-                        ],
-                    },
-                    ensure_ascii=False,
-                )
             return json.dumps({"passed": True, "issues": []}, ensure_ascii=False)
 
         if "叙事修订器" in system:
             return json.dumps({"nodes": [mock_node_for_id("N001"), mock_node_for_id("N002")]}, ensure_ascii=False)
 
         if "质量审查器" in system:
+            self.quality_calls += 1
+            if self.quality_calls == 1:
+                return json.dumps(
+                    {
+                        "score": 72,
+                        "isUsable": False,
+                        "problems": ["节奏略重复，需要压缩首段并保持自然讲述。"],
+                        "strengths": ["事实稳定"],
+                        "revisionAdvice": ["删掉重复开场，减少解释感。"],
+                        "checklist": {
+                            "hasStoryness": True,
+                            "hasScenes": True,
+                            "hasCausalContinuity": True,
+                            "hasEmotionalContinuity": True,
+                            "avoidsPrematureAbstraction": True,
+                            "hasNarrativeCoherence": True,
+                            "hasCompanionInsight": True,
+                            "avoidsFieldStitching": True,
+                            "avoidsRepetition": False,
+                            "hasCompleteThroughline": True,
+                        },
+                    },
+                    ensure_ascii=False,
+                )
             return json.dumps(
                 {
-                    "score": 84,
+                    "score": 86,
                     "isUsable": True,
                     "problems": [],
-                    "strengths": ["事实优先", "过渡清晰", "有场景片段", "讲述人点评克制"],
+                    "strengths": ["自然讲述", "事实优先", "没有字段拼接"],
                     "revisionAdvice": [],
                     "checklist": {
                         "hasStoryness": True,
@@ -67,11 +79,16 @@ class MockLLM:
                         "avoidsPrematureAbstraction": True,
                         "hasNarrativeCoherence": True,
                         "hasCompanionInsight": True,
+                        "avoidsFieldStitching": True,
+                        "avoidsRepetition": True,
                         "hasCompleteThroughline": True,
                     },
                 },
                 ensure_ascii=False,
             )
+
+        if "质量修订器" in system:
+            return json.dumps({"nodes": [mock_node_for_id("N001"), mock_node_for_id("N002")]}, ensure_ascii=False)
 
         return "{}"
 
@@ -234,8 +251,49 @@ def mock_outline() -> dict:
     }
 
 
+def mock_scene_plan(user: str) -> dict:
+    current_segment = user.split("当前 segment：")[-1]
+    if "N002" in current_segment:
+        return mock_scene_plan_for_id("N002")
+    return mock_scene_plan_for_id("N001")
+
+
+def mock_scene_plan_for_id(node_id: str) -> dict:
+    plans = {
+        "N001": {
+            "node_id": "N001",
+            "title": "武当山上的寿宴",
+            "where_are_we": "武当山，张三丰百岁寿辰",
+            "who_is_present": ["张翠山", "殷素素", "张无忌", "张三丰", "武林群雄"],
+            "why_this_scene_happens": "张翠山一家返回中原，各派趁寿宴逼问谢逊下落。",
+            "listener_knows_before": ["张翠山一家从冰火岛回到中原", "谢逊和屠龙刀牵动江湖"],
+            "new_info_to_introduce": ["张三丰是张翠山的师父，也是张无忌的太师父。"],
+            "conflict_or_pressure": "张翠山不能出卖义兄，也不愿把武当拖入风波。",
+            "emotional_turn": "回家变成逼问，团聚变成诀别。",
+            "insight_after_scene": "这让张无忌第一次看见，正义名义也可能逼死人。",
+            "transition_goal": "父母之死没有结束伤害，寒毒继续留在他身上。",
+            "uncertainty_notes": [],
+        },
+        "N002": {
+            "node_id": "N002",
+            "title": "寒毒留在身体里",
+            "where_are_we": "武当山之后，张无忌被寒毒折磨的求医路上",
+            "who_is_present": ["张无忌", "张三丰"],
+            "why_this_scene_happens": "张无忌身中玄冥神掌，张三丰也不能彻底根治。",
+            "listener_knows_before": ["张无忌已经失去父母", "江湖逼问围绕谢逊和屠龙刀"],
+            "new_info_to_introduce": ["玄冥二老造成寒毒，是江湖斗争压到张无忌身上的后果。"],
+            "conflict_or_pressure": "寒毒让创伤从记忆变成每天发作的身体现实。",
+            "emotional_turn": "悲伤变成长期求生。",
+            "insight_after_scene": "他后来不愿轻易杀人，和这段经历有关。",
+            "transition_goal": "要活下去，他必须找到能压过寒毒的力量。",
+            "uncertainty_notes": [],
+        },
+    }
+    return plans[node_id]
+
+
 def mock_node(user: str) -> dict:
-    current_segment = user.split("当前节点：")[-1]
+    current_segment = user.split("当前 segment：")[-1]
     if "N002" in current_segment:
         return mock_node_for_id("N002")
     return mock_node_for_id("N001")
@@ -251,26 +309,40 @@ def mock_node_for_id(node_id: str) -> dict:
             "required_facts": ["父母之死发生在武当山相关场合"],
             "causal_context": "返回中原使谢逊下落成为群雄逼问焦点。",
             "emotional_context": "张无忌第一次看见正义话语也会逼死人。",
-            "character_intro_notes": ["张三丰是张翠山的师父，也是武当派最重要的精神支柱。"],
-            "scene_moment": "地点在武当山。张翠山和殷素素带着张无忌回来，本应是师门重逢，却撞上群雄逼问谢逊下落。",
-            "narration": "张无忌还小，他未必听得懂每一句江湖话，但他能看懂父亲的退路正在变窄。张翠山不能出卖义兄，也不愿把风波继续压到武当身上，最终自尽。殷素素随后也选择同死。",
-            "companion_insight": "这一场不是简单的父母双亡。它让张无忌第一次看见，正义的名义也可能把人逼到死路。",
-            "transition_to_next": "而这场伤害没有停在武当山上，它很快变成了张无忌身体里的寒毒。",
+            "character_intro_notes": ["张三丰是张翠山的师父，也是张无忌的太师父。"],
+            "scene_moment": "武当山百岁寿辰上，群雄逼问谢逊下落。",
+            "narration": "张翠山不能出卖义兄，殷素素也无法把秘密交出去。",
+            "companion_insight": "这让张无忌第一次看见，正义名义也可能逼死人。",
+            "transition_to_next": "伤害很快变成他身体里的寒毒。",
+            "script_text": (
+                "张无忌的故事，先从一次回家讲起。张翠山和殷素素带着儿子回到武当山，那里本该是张三丰百岁寿辰，"
+                "也是久别师门后的团聚。可各派来人的心思不在祝寿，他们真正想问的是谢逊在哪里，屠龙刀在哪里。"
+                "张三丰是张翠山的师父，也是张无忌的太师父，但就算有这样一位宗师在场，张翠山面对的压力也没有消失："
+                "他说出谢逊，就是出卖义兄；不说，武当和妻儿都要被卷进这场逼问。最后，张翠山自尽，殷素素也随他而去。"
+                "对张无忌来说，这不是一句“父母双亡”能概括的事。他第一次看见，江湖里那些自称正义的人，也能把人逼到死路。"
+            ),
             "uncertainty_notes": [],
         },
         "N002": {
             "node_id": "N002",
             "title": "寒毒留在身体里",
-            "opening_bridge": "父母之死之后，江湖的后果继续追上这个孩子。",
+            "opening_bridge": "父母之死之后，伤害没有停在武当山上。",
             "source_scenes": [],
             "required_facts": ["父母之死后张无忌身中玄冥神掌"],
             "causal_context": "父母之死和寒毒让张无忌长期承受上一代仇怨后果。",
             "emotional_context": "痛苦从事件变成持续命运。",
-            "character_intro_notes": ["玄冥二老是造成寒毒的高手，他们把江湖斗争直接压到张无忌身上。"],
-            "scene_moment": "张无忌身中玄冥神掌后，连张三丰也只能暂时护住他的性命，不能彻底根除寒毒。",
-            "narration": "寒毒不是普通受伤。它让父母之死不只是回忆，而是每天都在身体里发作的现实。别人争谢逊，争屠龙刀，争正邪名分，最后承受后果的，是一个孩子。",
-            "companion_insight": "这就是张无忌后来不愿轻易杀人的底色：他太早知道，大人的胜负会变成孩子身上的痛。",
-            "transition_to_next": "要活下去，他必须找到一种比寒毒更强的力量。",
+            "character_intro_notes": ["玄冥二老造成寒毒，是江湖斗争压到张无忌身上的后果。"],
+            "scene_moment": "张三丰只能暂时护住张无忌性命，不能根除寒毒。",
+            "narration": "寒毒让父母之死变成每天发作的现实。",
+            "companion_insight": "他后来不愿轻易杀人，和这段经历有关。",
+            "transition_to_next": "要活下去，他必须找到一种更强的力量。",
+            "script_text": (
+                "父母之死之后，江湖的后果继续追上这个孩子。张无忌身上还有玄冥神掌留下的寒毒，张三丰能护住他的性命，"
+                "却不能把寒毒彻底拔掉。这里要先知道，玄冥二老不是张无忌人生里的路人，他们造成的寒毒，等于把大人之间的争夺"
+                "压进了一个孩子的身体里。别人争谢逊，争屠龙刀，争正邪名分，最后每天承受痛的人却是张无忌。"
+                "所以寒毒不是简单的受伤设定，它让武当山那天的创伤一直延续下去。也正因为太早知道胜负会变成别人身上的痛，"
+                "张无忌后来才很难把杀人当成痛快的答案。要活下去，他必须找到一种比寒毒更强的力量。"
+            ),
             "uncertainty_notes": [],
         },
     }

@@ -21,24 +21,33 @@ class GenerateOptions:
     user_note: str = ""
     factuality_retries: int = 2
     narrative_retries: int = 1
+    quality_retries: int = 1
 
 
 def generate_script(llm: LLM, options: GenerateOptions) -> dict[str, Any]:
     recall = generate_recall(llm, options.book_name)
     profile = generate_profile(llm, options, recall)
     outline = generate_outline(llm, recall, profile)
-    nodes = generate_nodes(llm, recall, profile, outline, options.duration_minutes)
+    scene_plans = generate_scene_plans(llm, recall, profile, outline)
+    nodes = generate_nodes(llm, recall, profile, outline, scene_plans, options.duration_minutes)
     content = assemble_script(profile, outline, nodes)
 
     factuality_reviews: list[dict[str, Any]] = []
-    factuality = review_factuality(llm, recall, profile, outline, nodes, content)
+    factuality = review_factuality(llm, recall, profile, outline, scene_plans, nodes, content)
     factuality_reviews.append(factuality)
 
     retry_count = 0
     while not factuality.get("passed") and retry_count < options.factuality_retries:
-        nodes = revise_nodes_for_factuality(llm, recall, outline, nodes, factuality.get("issues", []))
+        nodes = revise_nodes_for_factuality(
+            llm,
+            recall,
+            outline,
+            scene_plans,
+            nodes,
+            factuality.get("issues", []),
+        )
         content = assemble_script(profile, outline, nodes)
-        factuality = review_factuality(llm, recall, profile, outline, nodes, content)
+        factuality = review_factuality(llm, recall, profile, outline, scene_plans, nodes, content)
         factuality_reviews.append(factuality)
         retry_count += 1
 
@@ -46,22 +55,61 @@ def generate_script(llm: LLM, options: GenerateOptions) -> dict[str, Any]:
     narrative = {"skipped": True, "reason": "factuality_failed", "issues": []}
 
     if factuality.get("passed"):
-        narrative = review_narrative_coherence(llm, outline, nodes, content)
+        narrative = review_narrative_coherence(llm, outline, scene_plans, nodes, content)
         narrative_reviews.append(narrative)
 
         retry_count = 0
         while not narrative.get("passed") and retry_count < options.narrative_retries:
-            nodes = revise_nodes_for_narrative(llm, outline, nodes, narrative.get("issues", []))
+            nodes = revise_nodes_for_narrative(
+                llm,
+                outline,
+                scene_plans,
+                nodes,
+                narrative.get("issues", []),
+            )
             content = assemble_script(profile, outline, nodes)
-            narrative = review_narrative_coherence(llm, outline, nodes, content)
+            narrative = review_narrative_coherence(llm, outline, scene_plans, nodes, content)
             narrative_reviews.append(narrative)
             retry_count += 1
 
+    quality_reviews: list[dict[str, Any]] = []
     if factuality.get("passed"):
         final_content = content
         draft_content = ""
-        quality = review_quality(llm, recall, profile, outline, final_content, factuality, narrative)
-        status = "ok" if narrative.get("passed") else "narrative_issues"
+        quality = review_quality(llm, recall, profile, outline, scene_plans, final_content, factuality, narrative)
+        quality_reviews.append(quality)
+
+        retry_count = 0
+        while should_revise_quality(quality) and retry_count < options.quality_retries:
+            nodes = revise_nodes_for_quality(
+                llm,
+                recall,
+                outline,
+                scene_plans,
+                nodes,
+                narrative.get("issues", []),
+                quality,
+            )
+            final_content = assemble_script(profile, outline, nodes)
+            quality = review_quality(
+                llm,
+                recall,
+                profile,
+                outline,
+                scene_plans,
+                final_content,
+                factuality,
+                narrative,
+            )
+            quality_reviews.append(quality)
+            retry_count += 1
+
+        if not narrative.get("passed"):
+            status = "narrative_issues"
+        elif should_revise_quality(quality):
+            status = "quality_issues"
+        else:
+            status = "ok"
     else:
         final_content = ""
         draft_content = content
@@ -77,6 +125,7 @@ def generate_script(llm: LLM, options: GenerateOptions) -> dict[str, Any]:
         "recall": recall,
         "profile": profile,
         "outline": outline,
+        "scenePlans": scene_plans,
         "nodes": nodes,
         "content": final_content,
         "draftContent": draft_content,
@@ -85,6 +134,7 @@ def generate_script(llm: LLM, options: GenerateOptions) -> dict[str, Any]:
         "narrative": narrative,
         "narrativeReviews": narrative_reviews,
         "quality": quality,
+        "qualityReviews": quality_reviews,
     }
 
 
@@ -128,11 +178,40 @@ def generate_outline(
     )
 
 
+def generate_scene_plans(
+    llm: LLM,
+    recall: dict[str, Any],
+    profile: dict[str, Any],
+    outline: dict[str, Any],
+) -> list[dict[str, Any]]:
+    segments = outline.get("segments", [])
+    if not isinstance(segments, list) or not segments:
+        raise ValueError("Outline must contain a non-empty segments array.")
+
+    scene_plans: list[dict[str, Any]] = []
+    for segment in segments:
+        result = complete_json(
+            llm,
+            prompts.SCENE_PLAN_SYSTEM,
+            prompts.SCENE_PLAN_USER.format(
+                recall_json=json.dumps(recall, ensure_ascii=False, indent=2),
+                profile_json=json.dumps(profile, ensure_ascii=False, indent=2),
+                outline_json=json.dumps(outline, ensure_ascii=False, indent=2),
+                segment_json=json.dumps(segment, ensure_ascii=False, indent=2),
+            ),
+            f"scene plan {segment.get('node_id') or segment.get('title') or len(scene_plans) + 1}",
+        )
+        scene_plans.append(normalize_scene_plan(result, segment))
+
+    return scene_plans
+
+
 def generate_nodes(
     llm: LLM,
     recall: dict[str, Any],
     profile: dict[str, Any],
     outline: dict[str, Any],
+    scene_plans: list[dict[str, Any]],
     duration_minutes: int,
 ) -> list[dict[str, Any]]:
     segments = outline.get("segments", [])
@@ -141,8 +220,10 @@ def generate_nodes(
 
     target_words = max(350, int(duration_minutes * 280 / len(segments)))
     nodes: list[dict[str, Any]] = []
+    scene_plan_by_id = {plan.get("node_id"): plan for plan in scene_plans}
 
     for segment in segments:
+        scene_plan = scene_plan_by_id.get(segment.get("node_id"), {})
         result = complete_json(
             llm,
             prompts.NODE_SYSTEM,
@@ -151,21 +232,45 @@ def generate_nodes(
                 profile_json=json.dumps(profile, ensure_ascii=False, indent=2),
                 outline_json=json.dumps(outline, ensure_ascii=False, indent=2),
                 segment_json=json.dumps(segment, ensure_ascii=False, indent=2),
+                scene_plan_json=json.dumps(scene_plan, ensure_ascii=False, indent=2),
                 target_words=target_words,
             ),
             f"node {segment.get('node_id') or segment.get('title') or len(nodes) + 1}",
         )
-        node = normalize_node(result, segment)
+        node = normalize_node(result, segment, scene_plan)
         nodes.append(node)
 
     return nodes
 
 
-def normalize_node(raw_node: Any, segment: dict[str, Any]) -> dict[str, Any]:
+def normalize_scene_plan(raw_plan: Any, segment: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw_plan, dict):
+        raw_plan = {}
+
+    return {
+        "node_id": raw_plan.get("node_id") or segment.get("node_id") or str(segment.get("id", "")),
+        "title": raw_plan.get("title") or segment.get("title") or "",
+        "where_are_we": raw_plan.get("where_are_we") or segment.get("scene_focus") or "",
+        "who_is_present": raw_plan.get("who_is_present") or [],
+        "why_this_scene_happens": raw_plan.get("why_this_scene_happens") or segment.get("causal_context") or "",
+        "listener_knows_before": raw_plan.get("listener_knows_before") or segment.get("listener_knows") or [],
+        "new_info_to_introduce": raw_plan.get("new_info_to_introduce")
+        or segment.get("new_characters_to_introduce")
+        or [],
+        "conflict_or_pressure": raw_plan.get("conflict_or_pressure") or segment.get("emotional_context") or "",
+        "emotional_turn": raw_plan.get("emotional_turn") or "",
+        "insight_after_scene": raw_plan.get("insight_after_scene") or "",
+        "transition_goal": raw_plan.get("transition_goal") or segment.get("transition_to_next") or "",
+        "uncertainty_notes": raw_plan.get("uncertainty_notes") or segment.get("uncertainty_notes") or [],
+    }
+
+
+def normalize_node(raw_node: Any, segment: dict[str, Any], scene_plan: dict[str, Any] | None = None) -> dict[str, Any]:
+    scene_plan = scene_plan or {}
     if isinstance(raw_node, str):
-        raw_node = {"narration": raw_node}
+        raw_node = {"script_text": raw_node}
     if not isinstance(raw_node, dict):
-        raw_node = {"narration": str(raw_node)}
+        raw_node = {"script_text": str(raw_node)}
 
     return {
         "node_id": raw_node.get("node_id") or segment.get("node_id") or str(segment.get("id", "")),
@@ -178,10 +283,11 @@ def normalize_node(raw_node: Any, segment: dict[str, Any]) -> dict[str, Any]:
         "character_intro_notes": raw_node.get("character_intro_notes")
         or segment.get("new_characters_to_introduce")
         or [],
-        "scene_moment": raw_node.get("scene_moment") or segment.get("scene_focus") or "",
+        "scene_moment": raw_node.get("scene_moment") or scene_plan.get("where_are_we") or segment.get("scene_focus") or "",
         "narration": raw_node.get("narration") or "",
         "companion_insight": raw_node.get("companion_insight") or "",
         "transition_to_next": raw_node.get("transition_to_next") or segment.get("transition_to_next") or "",
+        "script_text": raw_node.get("script_text") or raw_node.get("scriptText") or raw_node.get("narration") or "",
         "uncertainty_notes": raw_node.get("uncertainty_notes") or segment.get("uncertainty_notes") or [],
     }
 
@@ -196,8 +302,10 @@ def assemble_script(
     if opening:
         parts.append(opening)
 
-    for node in nodes:
+    for index, node in enumerate(nodes):
         node_parts = node_to_script_parts(node)
+        if index == 0 and opening and node_parts:
+            node_parts[0] = strip_repeated_prefix(node_parts[0], opening)
         parts.extend(node_parts)
 
     closing = (outline.get("closingQuestion") or "").strip()
@@ -205,6 +313,18 @@ def assemble_script(
         parts.append(closing)
 
     return "\n\n".join(dedupe_adjacent_parts(part for part in parts if part))
+
+
+def strip_repeated_prefix(text: str, prefix: str) -> str:
+    stripped_text = text.strip()
+    stripped_prefix = prefix.strip()
+    if not stripped_prefix or not stripped_text.startswith(stripped_prefix):
+        return text
+
+    remainder = stripped_text[len(stripped_prefix) :].lstrip()
+    if remainder.startswith(("。", "，", "：", ":", "；", ";")):
+        remainder = remainder[1:].lstrip()
+    return remainder or stripped_text
 
 
 def dedupe_adjacent_parts(parts: Any) -> list[str]:
@@ -220,6 +340,10 @@ def dedupe_adjacent_parts(parts: Any) -> list[str]:
 
 
 def node_to_script_parts(node: dict[str, Any]) -> list[str]:
+    script_text = (node.get("script_text") or "").strip()
+    if script_text:
+        return [script_text]
+
     parts: list[str] = []
 
     for key in ["opening_bridge", "scene_moment"]:
@@ -248,6 +372,7 @@ def review_factuality(
     recall: dict[str, Any],
     profile: dict[str, Any],
     outline: dict[str, Any],
+    scene_plans: list[dict[str, Any]],
     nodes: list[dict[str, Any]],
     script: str,
 ) -> dict[str, Any]:
@@ -258,6 +383,7 @@ def review_factuality(
             recall_json=json.dumps(recall, ensure_ascii=False, indent=2),
             profile_json=json.dumps(profile, ensure_ascii=False, indent=2),
             outline_json=json.dumps(outline, ensure_ascii=False, indent=2),
+            scene_plans_json=json.dumps(scene_plans, ensure_ascii=False, indent=2),
             nodes_json=json.dumps(nodes, ensure_ascii=False, indent=2),
             script=script,
         ),
@@ -270,6 +396,7 @@ def revise_nodes_for_factuality(
     llm: LLM,
     recall: dict[str, Any],
     outline: dict[str, Any],
+    scene_plans: list[dict[str, Any]],
     nodes: list[dict[str, Any]],
     issues: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -279,6 +406,7 @@ def revise_nodes_for_factuality(
         prompts.FACTUAL_REVISION_USER.format(
             recall_json=json.dumps(recall, ensure_ascii=False, indent=2),
             outline_json=json.dumps(outline, ensure_ascii=False, indent=2),
+            scene_plans_json=json.dumps(scene_plans, ensure_ascii=False, indent=2),
             nodes_json=json.dumps(nodes, ensure_ascii=False, indent=2),
             issues_json=json.dumps(issues, ensure_ascii=False, indent=2),
         ),
@@ -290,6 +418,7 @@ def revise_nodes_for_factuality(
 def review_narrative_coherence(
     llm: LLM,
     outline: dict[str, Any],
+    scene_plans: list[dict[str, Any]],
     nodes: list[dict[str, Any]],
     script: str,
 ) -> dict[str, Any]:
@@ -298,6 +427,7 @@ def review_narrative_coherence(
         prompts.NARRATIVE_REVIEW_SYSTEM,
         prompts.NARRATIVE_REVIEW_USER.format(
             outline_json=json.dumps(outline, ensure_ascii=False, indent=2),
+            scene_plans_json=json.dumps(scene_plans, ensure_ascii=False, indent=2),
             nodes_json=json.dumps(nodes, ensure_ascii=False, indent=2),
             script=script,
         ),
@@ -309,6 +439,7 @@ def review_narrative_coherence(
 def revise_nodes_for_narrative(
     llm: LLM,
     outline: dict[str, Any],
+    scene_plans: list[dict[str, Any]],
     nodes: list[dict[str, Any]],
     issues: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -317,6 +448,7 @@ def revise_nodes_for_narrative(
         prompts.NARRATIVE_REVISION_SYSTEM,
         prompts.NARRATIVE_REVISION_USER.format(
             outline_json=json.dumps(outline, ensure_ascii=False, indent=2),
+            scene_plans_json=json.dumps(scene_plans, ensure_ascii=False, indent=2),
             nodes_json=json.dumps(nodes, ensure_ascii=False, indent=2),
             issues_json=json.dumps(issues, ensure_ascii=False, indent=2),
         ),
@@ -351,6 +483,7 @@ def review_quality(
     recall: dict[str, Any],
     profile: dict[str, Any],
     outline: dict[str, Any],
+    scene_plans: list[dict[str, Any]],
     script: str,
     factuality: dict[str, Any],
     narrative: dict[str, Any],
@@ -362,12 +495,47 @@ def review_quality(
             recall_json=json.dumps(recall, ensure_ascii=False, indent=2),
             profile_json=json.dumps(profile, ensure_ascii=False, indent=2),
             outline_json=json.dumps(outline, ensure_ascii=False, indent=2),
+            scene_plans_json=json.dumps(scene_plans, ensure_ascii=False, indent=2),
             factuality_json=json.dumps(factuality, ensure_ascii=False, indent=2),
             narrative_json=json.dumps(narrative, ensure_ascii=False, indent=2),
             script=script,
         ),
         "quality review",
     )
+
+
+def revise_nodes_for_quality(
+    llm: LLM,
+    recall: dict[str, Any],
+    outline: dict[str, Any],
+    scene_plans: list[dict[str, Any]],
+    nodes: list[dict[str, Any]],
+    narrative_issues: list[dict[str, Any]],
+    quality: dict[str, Any],
+) -> list[dict[str, Any]]:
+    result = complete_json(
+        llm,
+        prompts.QUALITY_REVISION_SYSTEM,
+        prompts.QUALITY_REVISION_USER.format(
+            recall_json=json.dumps(recall, ensure_ascii=False, indent=2),
+            outline_json=json.dumps(outline, ensure_ascii=False, indent=2),
+            scene_plans_json=json.dumps(scene_plans, ensure_ascii=False, indent=2),
+            nodes_json=json.dumps(nodes, ensure_ascii=False, indent=2),
+            narrative_issues_json=json.dumps(narrative_issues, ensure_ascii=False, indent=2),
+            quality_json=json.dumps(quality, ensure_ascii=False, indent=2),
+        ),
+        "quality revision",
+    )
+    return normalize_revised_nodes(result, outline)
+
+
+def should_revise_quality(quality: dict[str, Any]) -> bool:
+    score = quality.get("score", 0)
+    try:
+        numeric_score = float(score)
+    except (TypeError, ValueError):
+        numeric_score = 0
+    return numeric_score < 80 or quality.get("isUsable") is False
 
 
 def complete_json(llm: LLM, system: str, user: str, label: str) -> Any:
